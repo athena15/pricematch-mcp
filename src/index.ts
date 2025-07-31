@@ -7,23 +7,25 @@ interface Env {
 	FIRECRAWL_API_KEY: string;
 }
 
-// The class definition is correct. The changes are in the 'export default' block below.
-export class MyMCP extends McpAgent {
+export class MyMCP extends McpAgent<Env> { // Specify Env type for the agent
 	server = new McpServer({
 		name: "Pricematch Agent",
-		version: "1.1.0",
+		version: "1.2.0", // Incremented version
 	});
 
-	// The 'init' method is correctly called by the MCP SDK's serve methods
-	async init(env: Env) {
-		const firecrawlApiKey = env.FIRECRAWL_API_KEY;
+	// FIX: The 'init' method does not receive 'env' as a parameter.
+	// It should access the environment via 'this.env', which is set
+	// by the base McpAgent constructor.
+	async init() {
+		// Use this.env to access environment variables
+		const firecrawlApiKey = this.env.FIRECRAWL_API_KEY;
 		const firecrawlApiHeaders = {
 			"Content-Type": "application/json",
 			Authorization: `Bearer ${firecrawlApiKey}`,
 		};
 
 		if (!firecrawlApiKey) {
-			console.error("FIRECRAWL_API_KEY is not set in the environment.");
+			console.error("FIRECRAWL_API_KEY is not available in this.env.");
 		}
 
 		// Tool: Find product URLs on Walmart and Target
@@ -132,21 +134,20 @@ export class MyMCP extends McpAgent {
 	}
 }
 
-// FIX: This 'export default' block is now corrected.
+// This fetch handler is correct and does not need to change.
 export default {
 	fetch(request: Request, env: Env, ctx: ExecutionContext) {
 		const url = new URL(request.url);
 
 		// Handle the SSE connection for the AI Playground
 		if (url.pathname === "/sse" || url.pathname.startsWith("/sse/")) {
-			// Let the SDK handle the request. It will instantiate the agent correctly.
-			// Pass 'env' so the API key is available in the 'init' method.
+			// The { env } option here correctly ensures the Durable Object
+			// is instantiated with the right environment.
 			return MyMCP.serveSSE("/sse", { env }).fetch(request, env, ctx);
 		}
 
-		// Handle the main MCP endpoint for tool definitions etc.
+		// Handle the main MCP endpoint
 		if (url.pathname === "/mcp") {
-			// Let the SDK handle this request as well.
 			return MyMCP.serve("/mcp", { env }).fetch(request, env, ctx);
 		}
 
