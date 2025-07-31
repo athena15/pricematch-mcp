@@ -7,13 +7,14 @@ interface Env {
 	FIRECRAWL_API_KEY: string;
 }
 
-// Define our MCP agent with all tools
+// The class definition is correct. The changes are in the 'export default' block below.
 export class MyMCP extends McpAgent {
 	server = new McpServer({
 		name: "Pricematch Agent",
-		version: "1.1.0", // Incremented version
+		version: "1.1.0",
 	});
 
+	// The 'init' method is correctly called by the MCP SDK's serve methods
 	async init(env: Env) {
 		const firecrawlApiKey = env.FIRECRAWL_API_KEY;
 		const firecrawlApiHeaders = {
@@ -25,7 +26,7 @@ export class MyMCP extends McpAgent {
 			console.error("FIRECRAWL_API_KEY is not set in the environment.");
 		}
 
-		// Tool 1: Find product URLs on Walmart and Target
+		// Tool: Find product URLs on Walmart and Target
 		this.server.tool(
 			"find_product_urls",
 			{
@@ -37,7 +38,6 @@ export class MyMCP extends McpAgent {
 				if (!firecrawlApiKey) {
 					return { content: [{ type: "text", text: "Error: Firecrawl API key is not configured." }] };
 				}
-
 				try {
 					const [walmartResponse, targetResponse] = await Promise.all([
 						fetch("https://api.firecrawl.dev/v0/search", {
@@ -55,28 +55,18 @@ export class MyMCP extends McpAgent {
 					if (!walmartResponse.ok || !targetResponse.ok) {
 						return { content: [{ type: "text", text: "Error fetching data from Firecrawl." }] };
 					}
-
 					const walmartData = await walmartResponse.json();
 					const targetData = await targetResponse.json();
-
 					const walmartUrl = walmartData.data?.[0]?.url || "Walmart URL Not Found";
 					const targetUrl = targetData.data?.[0]?.url || "Target URL Not Found";
-
-					// Return just the URLs as separate text content elements
-					return {
-						content: [
-							{ type: "text", text: walmartUrl },
-							{ type: "text", text: targetUrl },
-						],
-					};
+					return { content: [{ type: "text", text: walmartUrl }, { type: "text", text: targetUrl }] };
 				} catch (error) {
-					console.error("Error in find_product_urls tool:", error);
 					return { content: [{ type: "text", text: "An unexpected error occurred." }] };
 				}
 			}
 		);
 
-		// Tool 2: Extract the price from a product page URL
+		// Tool: Extract the price from a product page URL
 		this.server.tool(
 			"extract_product_price",
 			{
@@ -98,18 +88,12 @@ export class MyMCP extends McpAgent {
 								mode: "llm-extraction",
 								extraction_schema: {
 									type: "object",
-									properties: {
-										price: {
-											type: "string",
-											description: "The numerical price of the product, without currency symbols.",
-										},
-									},
+									properties: { price: { type: "string", description: "The numerical price of the product, without currency symbols." } },
 									required: ["price"],
 								},
 							},
 						}),
 					});
-
 					if (!response.ok) {
 						return { content: [{ type: "text", text: "Error extracting price from URL." }] };
 					}
@@ -117,44 +101,28 @@ export class MyMCP extends McpAgent {
 					const price = extractedData.data?.price || "Price not found";
 					return { content: [{ type: "text", text: String(price) }] };
 				} catch (error) {
-					console.error("Error in extract_product_price tool:", error);
 					return { content: [{ type: "text", text: "An unexpected error occurred while extracting the price." }] };
 				}
 			}
 		);
 
-		// Simple addition tool (restored)
-		this.server.tool(
-			"add",
-			{ a: z.number(), b: z.number() },
-			async ({ a, b }) => ({
-				content: [{ type: "text", text: String(a + b) }],
-			})
-		);
+		// Simple addition tool
+		this.server.tool("add", { a: z.number(), b: z.number() }, async ({ a, b }) => ({
+			content: [{ type: "text", text: String(a + b) }],
+		}));
 
-		// Calculator tool with multiple operations (restored)
+		// Calculator tool with multiple operations
 		this.server.tool(
 			"calculate",
-			{
-				operation: z.enum(["add", "subtract", "multiply", "divide"]),
-				a: z.number(),
-				b: z.number(),
-			},
+			{ operation: z.enum(["add", "subtract", "multiply", "divide"]), a: z.number(), b: z.number() },
 			async ({ operation, a, b }) => {
 				let result: number;
 				switch (operation) {
-					case "add":
-						result = a + b;
-						break;
-					case "subtract":
-						result = a - b;
-						break;
-					case "multiply":
-						result = a * b;
-						break;
+					case "add": result = a + b; break;
+					case "subtract": result = a - b; break;
+					case "multiply": result = a * b; break;
 					case "divide":
-						if (b === 0)
-							return { content: [{ type: "text", text: "Error: Cannot divide by zero" }] };
+						if (b === 0) return { content: [{ type: "text", text: "Error: Cannot divide by zero" }] };
 						result = a / b;
 						break;
 				}
@@ -164,15 +132,21 @@ export class MyMCP extends McpAgent {
 	}
 }
 
-// Standard Cloudflare Worker fetch handler
+// FIX: This 'export default' block is now corrected.
 export default {
-	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+	fetch(request: Request, env: Env, ctx: ExecutionContext) {
 		const url = new URL(request.url);
-		
-		const agent = new MyMCP();
-		await agent.init(env);
 
+		// Handle the SSE connection for the AI Playground
+		if (url.pathname === "/sse" || url.pathname.startsWith("/sse/")) {
+			// Let the SDK handle the request. It will instantiate the agent correctly.
+			// Pass 'env' so the API key is available in the 'init' method.
+			return MyMCP.serveSSE("/sse", { env }).fetch(request, env, ctx);
+		}
+
+		// Handle the main MCP endpoint for tool definitions etc.
 		if (url.pathname === "/mcp") {
+			// Let the SDK handle this request as well.
 			return MyMCP.serve("/mcp", { env }).fetch(request, env, ctx);
 		}
 
