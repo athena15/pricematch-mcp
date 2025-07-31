@@ -2,15 +2,128 @@ import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-// Define our MCP agent with tools
+// Define the environment variables expected by this worker
+interface Env {
+	FIRECRAWL_API_KEY: string;
+}
+
+// Define our MCP agent with all tools
 export class MyMCP extends McpAgent {
 	server = new McpServer({
-		name: "Authless Calculator",
-		version: "1.0.0",
+		name: "Pricematch Agent",
+		version: "1.1.0", // Incremented version
 	});
 
-	async init() {
-		// Simple addition tool
+	async init(env: Env) {
+		const firecrawlApiKey = env.FIRECRAWL_API_KEY;
+		const firecrawlApiHeaders = {
+			"Content-Type": "application/json",
+			Authorization: `Bearer ${firecrawlApiKey}`,
+		};
+
+		if (!firecrawlApiKey) {
+			console.error("FIRECRAWL_API_KEY is not set in the environment.");
+		}
+
+		// Tool 1: Find product URLs on Walmart and Target
+		this.server.tool(
+			"find_product_urls",
+			{
+				title: "Find Product URLs",
+				description: "Gets the product page URL for a given product name from both Walmart.com and Target.com.",
+				inputSchema: { productName: z.string() },
+			},
+			async ({ productName }) => {
+				if (!firecrawlApiKey) {
+					return { content: [{ type: "text", text: "Error: Firecrawl API key is not configured." }] };
+				}
+
+				try {
+					const [walmartResponse, targetResponse] = await Promise.all([
+						fetch("https://api.firecrawl.dev/v0/search", {
+							method: "POST",
+							headers: firecrawlApiHeaders,
+							body: JSON.stringify({ query: `site:walmart.com ${productName}` }),
+						}),
+						fetch("https://api.firecrawl.dev/v0/search", {
+							method: "POST",
+							headers: firecrawlApiHeaders,
+							body: JSON.stringify({ query: `site:target.com ${productName}` }),
+						}),
+					]);
+
+					if (!walmartResponse.ok || !targetResponse.ok) {
+						return { content: [{ type: "text", text: "Error fetching data from Firecrawl." }] };
+					}
+
+					const walmartData = await walmartResponse.json();
+					const targetData = await targetResponse.json();
+
+					const walmartUrl = walmartData.data?.[0]?.url || "Walmart URL Not Found";
+					const targetUrl = targetData.data?.[0]?.url || "Target URL Not Found";
+
+					// Return just the URLs as separate text content elements
+					return {
+						content: [
+							{ type: "text", text: walmartUrl },
+							{ type: "text", text: targetUrl },
+						],
+					};
+				} catch (error) {
+					console.error("Error in find_product_urls tool:", error);
+					return { content: [{ type: "text", text: "An unexpected error occurred." }] };
+				}
+			}
+		);
+
+		// Tool 2: Extract the price from a product page URL
+		this.server.tool(
+			"extract_product_price",
+			{
+				title: "Extract Product Price",
+				description: "Extracts just the price from a given product page URL.",
+				inputSchema: { productUrl: z.string().url() },
+			},
+			async ({ productUrl }) => {
+				if (!firecrawlApiKey) {
+					return { content: [{ type: "text", text: "Error: Firecrawl API key is not configured." }] };
+				}
+				try {
+					const response = await fetch("https://api.firecrawl.dev/v0/extract", {
+						method: "POST",
+						headers: firecrawlApiHeaders,
+						body: JSON.stringify({
+							url: productUrl,
+							extractor: {
+								mode: "llm-extraction",
+								extraction_schema: {
+									type: "object",
+									properties: {
+										price: {
+											type: "string",
+											description: "The numerical price of the product, without currency symbols.",
+										},
+									},
+									required: ["price"],
+								},
+							},
+						}),
+					});
+
+					if (!response.ok) {
+						return { content: [{ type: "text", text: "Error extracting price from URL." }] };
+					}
+					const extractedData = await response.json();
+					const price = extractedData.data?.price || "Price not found";
+					return { content: [{ type: "text", text: String(price) }] };
+				} catch (error) {
+					console.error("Error in extract_product_price tool:", error);
+					return { content: [{ type: "text", text: "An unexpected error occurred while extracting the price." }] };
+				}
+			}
+		);
+
+		// Simple addition tool (restored)
 		this.server.tool(
 			"add",
 			{ a: z.number(), b: z.number() },
@@ -19,7 +132,7 @@ export class MyMCP extends McpAgent {
 			})
 		);
 
-		// Calculator tool with multiple operations
+		// Calculator tool with multiple operations (restored)
 		this.server.tool(
 			"calculate",
 			{
@@ -41,14 +154,7 @@ export class MyMCP extends McpAgent {
 						break;
 					case "divide":
 						if (b === 0)
-							return {
-								content: [
-									{
-										type: "text",
-										text: "Error: Cannot divide by zero",
-									},
-								],
-							};
+							return { content: [{ type: "text", text: "Error: Cannot divide by zero" }] };
 						result = a / b;
 						break;
 				}
@@ -58,16 +164,16 @@ export class MyMCP extends McpAgent {
 	}
 }
 
+// Standard Cloudflare Worker fetch handler
 export default {
-	fetch(request: Request, env: Env, ctx: ExecutionContext) {
+	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
-
-		if (url.pathname === "/sse" || url.pathname === "/sse/message") {
-			return MyMCP.serveSSE("/sse").fetch(request, env, ctx);
-		}
+		
+		const agent = new MyMCP();
+		await agent.init(env);
 
 		if (url.pathname === "/mcp") {
-			return MyMCP.serve("/mcp").fetch(request, env, ctx);
+			return MyMCP.serve("/mcp", { env }).fetch(request, env, ctx);
 		}
 
 		return new Response("Not found", { status: 404 });
