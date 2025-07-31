@@ -5,6 +5,7 @@ import { z } from "zod";
 // Define the environment variables expected by this worker
 interface Env {
 	FIRECRAWL_API_KEY: string;
+	MCP_API_KEY: string;
 }
 
 export class MyMCP extends McpAgent<Env> { // Specify Env type for the agent
@@ -136,21 +137,39 @@ export class MyMCP extends McpAgent<Env> { // Specify Env type for the agent
 
 // This fetch handler is correct and does not need to change.
 export default {
-	fetch(request: Request, env: Env, ctx: ExecutionContext) {
-		const url = new URL(request.url);
+  	fetch(request: Request, env: Env, ctx: ExecutionContext) {
+  		const url = new URL(request.url);
 
-		// Handle the SSE connection for the AI Playground
-		if (url.pathname === "/sse" || url.pathname.startsWith("/sse/")) {
-			// The { env } option here correctly ensures the Durable Object
-			// is instantiated with the right environment.
-			return MyMCP.serveSSE("/sse", { env }).fetch(request, env, ctx);
-		}
+  		// API Key validation for Confluent Flink compatibility
+  		const apiKey = request.headers.get('api-key') ||
+  		              (request.headers.get('authorization')?.replace('Bearer ', ''));
 
-		// Handle the main MCP endpoint
-		if (url.pathname === "/mcp") {
-			return MyMCP.serve("/mcp", { env }).fetch(request, env, ctx);
-		}
+  		const expectedApiKey = env.MCP_API_KEY; // Get from environment variable
 
-		return new Response("Not found", { status: 404 });
-	},
-};
+  		// Skip API key validation for OPTIONS requests (CORS preflight)
+  		if (request.method !== 'OPTIONS' && apiKey !== expectedApiKey) {
+  			console.log(`[${new Date().toISOString()}] Unauthorized: API key '${apiKey}' does not match 
+  expected key`);
+  			return new Response('Unauthorized: Invalid or missing API key', {
+  				status: 401,
+  				headers: {
+  					'Access-Control-Allow-Origin': '*',
+  					'Access-Control-Allow-Headers': 'Content-Type, api-key, Authorization',
+  					'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+  				}
+  			});
+  		}
+
+  		// Handle the SSE connection for the AI Playground
+  		if (url.pathname === "/sse" || url.pathname.startsWith("/sse/")) {
+  			return MyMCP.serveSSE("/sse", { env }).fetch(request, env, ctx);
+  		}
+
+  		// Handle the main MCP endpoint
+  		if (url.pathname === "/mcp") {
+  			return MyMCP.serve("/mcp", { env }).fetch(request, env, ctx);
+  		}
+
+  		return new Response("Not found", { status: 404 });
+  	},
+  };
